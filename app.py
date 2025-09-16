@@ -1,3 +1,4 @@
+
 # app.py
 """
 Study Wise Ai Tutor - Streamlit app (single-file)
@@ -19,9 +20,8 @@ import os
 import io
 import time
 import html
-import textwrap
 import tempfile
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple, List, Dict
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -59,14 +59,12 @@ st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout="wide")
 # ----------------------
 
 def get_gemini_client():
-    """Return a google.genai client if configured."""
     api_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY") if "GEMINI_API_KEY" in st.secrets else None
     if api_key and genai is not None:
         return genai.Client(api_key=api_key)
     return None
 
 def get_openai_client():
-    """Return openai module configured if OPENAI_API_KEY exists."""
     api_key = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY") if "OPENAI_API_KEY" in st.secrets else None
     if api_key and openai is not None:
         openai.api_key = api_key
@@ -74,12 +72,6 @@ def get_openai_client():
     return None
 
 def generate_response(prompt: str, mode_meta: dict = None, max_output_tokens: int = 500) -> str:
-    """
-    Generate a response using configured LLM.
-    Prefers google.genai -> openai -> fallback echo heuristic.
-    mode_meta can include 'external_refs' boolean to instruct model.
-    """
-    # Build system/preamble for tutor style & reasoning modes
     system_preamble = (
         "You are Study Wise Ai Tutor — a helpful, patient, step-by-step AI tutor. "
         "When asked, provide clear explanations, list key steps, produce short quizzes, and suggest external resources "
@@ -91,11 +83,9 @@ def generate_response(prompt: str, mode_meta: dict = None, max_output_tokens: in
 
     external_flag = mode_meta.get("external_refs", True)
     reasoning = mode_meta.get("reasoning", "explain")
-
-    # Append instructions to prompt
     assembled_prompt = f"{system_preamble}\nMode: {reasoning}\nExternalLinksAllowed: {external_flag}\n\n{prompt}"
 
-    # Try Gemini first (if available)
+    # Try Gemini
     gemini = get_gemini_client()
     if gemini:
         try:
@@ -104,16 +94,13 @@ def generate_response(prompt: str, mode_meta: dict = None, max_output_tokens: in
                 contents=assembled_prompt,
                 config={"max_output_tokens": max_output_tokens}
             )
-            # Different SDK versions return different shapes; handle common ones:
             if hasattr(resp, "text") and resp.text:
                 return resp.text
-            # Fallback stringify
             return str(resp)
         except Exception as e:
-            st.debug = getattr(st, "debug", lambda *a, **k: None)
-            st.debug(f"Gemini error: {e}")
+            st.error(f"Gemini error: {e}")
 
-    # Try OpenAI ChatCompletion fallback
+    # Try OpenAI
     openai_client = get_openai_client()
     if openai_client:
         try:
@@ -138,11 +125,10 @@ def generate_response(prompt: str, mode_meta: dict = None, max_output_tokens: in
                 )
                 return resp.choices[0].text.strip()
         except Exception as e:
-            st.debug(f"OpenAI error: {e}")
+            st.error(f"OpenAI error: {e}")
 
-    short = assembled_prompt.strip()
     return ("[Local fallback response]\n\n"
-            + (short[:800] + ("..." if len(short) > 800 else "")))
+            + (assembled_prompt[:800] + ("..." if len(assembled_prompt) > 800 else "")))
 
 # ----------------------
 # File parsing utilities
@@ -197,5 +183,64 @@ def parse_uploaded_file(uploaded_file) -> Tuple[str, str]:
     return name, text
 
 # ----------------------
-# (rest of code omitted for brevity - it's identical to the long version in the previous assistant message)
+# Session state & helpers
 # ----------------------
+
+def init_session_state():
+    if "chat" not in st.session_state:
+        st.session_state.chat = []
+    if "files" not in st.session_state:
+        st.session_state.files = []
+    if "external_refs_enabled" not in st.session_state:
+        st.session_state.external_refs_enabled = True
+
+def push_chat(role: str, content: str, meta: dict = None):
+    if meta is None:
+        meta = {}
+    st.session_state.chat.append({"role": role, "content": content, "meta": meta, "ts": time.time()})
+
+# ----------------------
+# UI Rendering
+# ----------------------
+
+def main():
+    init_session_state()
+
+    st.title("✨ Study Wise Ai Tutor ✨")
+    st.markdown("Your personal AI-powered study companion. Study Wise Ai Tutor helps you learn faster with smart explanations, file analysis, external references, and interactive reasoning.")
+
+    with st.sidebar:
+        st.header("Options")
+        st.session_state.external_refs_enabled = st.checkbox("Enable external references", value=st.session_state.external_refs_enabled)
+        if st.button("Clear chat"):
+            st.session_state.chat = []
+            st.session_state.files = []
+            st.rerun()
+
+    # Display chat
+    for msg in st.session_state.chat:
+        if msg["role"] == "user":
+            st.chat_message("user").write(msg["content"])
+        else:
+            st.chat_message("assistant").write(msg["content"])
+
+    # Input area
+    user_input = st.chat_input("Ask a question...")
+    uploaded = st.file_uploader("Upload file", type=["pdf", "docx", "txt", "md"])
+
+    if uploaded:
+        filename, text = parse_uploaded_file(uploaded)
+        push_chat("user", f"Uploaded file: {filename}")
+        analysis_prompt = f"Summarize and analyze this document:\n{text[:MAX_PROMPT_CHUNK]}"
+        resp = generate_response(analysis_prompt)
+        push_chat("assistant", resp)
+        st.rerun()
+
+    if user_input:
+        push_chat("user", user_input)
+        resp = generate_response(user_input)
+        push_chat("assistant", resp)
+        st.rerun()
+
+if __name__ == "__main__":
+    main()
